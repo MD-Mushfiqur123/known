@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MQ-OS OMEGA | MULTI-USER VAULT</title>
+    <link href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #050505;
+            --grid: #111;
+            --text: #c0c0c0;
+            --primary: #00ff41; /* Hacker Green */
+            --alert: #ff0055;   /* Admin Red */
+            --win-bg: #000;
+        }
+
+        * { box-sizing: border-box; user-select: none; }
+        
+        body {
+            margin: 0; height: 100vh; overflow: hidden;
+            background-color: var(--bg);
+            background-image: 
+                linear-gradient(var(--grid) 1px, transparent 1px),
+                linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+            background-size: 20px 20px;
+            font-family: 'DotGothic16', monospace;
+            color: var(--text);
+            cursor: crosshair;
+        }
+
+        /* --- LAYERS --- */
+        #boot-screen, #lock-screen, #desktop {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+        }
+
+        /* --- LOCK SCREEN --- */
+        #lock-screen {
+            display: none; flex-direction: column; align-items: center; justify-content: center;
+            background: rgba(0,0,0,0.9); z-index: 1000;
+        }
+        
+        input.pin-entry {
+            background: transparent; border: none; border-bottom: 2px solid var(--primary);
+            color: var(--primary); font-family: inherit; font-size: 2rem;
+            text-align: center; width: 300px; outline: none; letter-spacing: 5px; margin-top: 20px;
+        }
+
+        /* --- DESKTOP --- */
+        #desktop { display: none; z-index: 100; grid-template-rows: 40px 1fr 30px; }
+        
+        header { 
+            background: #111; border-bottom: 1px solid #333; display: flex; 
+            align-items: center; justify-content: space-between; padding: 0 15px; 
+        }
+        
+        footer {
+            background: #111; border-top: 1px solid #333; display: flex;
+            align-items: center; justify-content: flex-end; padding: 0 15px; font-size: 0.8rem;
+        }
+
+        #app-grid {
+            padding: 20px; display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+            grid-auto-rows: 100px; gap: 15px; align-content: start;
+        }
+
+        .app-icon {
+            border: 1px dotted #444; display: flex; flex-direction: column; 
+            align-items: center; justify-content: center; cursor: pointer;
+            transition: 0.2s; background: rgba(0,0,0,0.5);
+        }
+        .app-icon:hover { border-color: var(--primary); background: #111; color: var(--primary); }
+        .icon-art { font-size: 1.8rem; margin-bottom: 5px; }
+
+        /* --- WINDOWS --- */
+        .window {
+            position: absolute; background: var(--win-bg); border: 2px solid var(--text);
+            box-shadow: 10px 10px 0px rgba(0,0,0,0.5); display: flex; flex-direction: column;
+            min-width: 300px; min-height: 200px; resize: both; overflow: hidden;
+        }
+        
+        .win-bar {
+            background: var(--text); color: #000; padding: 4px 8px; font-weight: bold;
+            display: flex; justify-content: space-between; cursor: move;
+        }
+        
+        .win-body { flex: 1; padding: 10px; overflow-y: auto; color: var(--text); }
+        .close-btn:hover { color: var(--alert); background: #000; cursor: pointer; }
+
+        /* --- ELEMENTS --- */
+        input, textarea {
+            width: 100%; background: #111; border: 1px solid #333; color: var(--primary);
+            padding: 5px; font-family: inherit; margin-bottom: 5px; outline: none;
+        }
+        button {
+            background: #222; color: var(--primary); border: 1px solid var(--primary);
+            padding: 5px 10px; cursor: pointer; text-transform: uppercase;
+        }
+        button:hover { background: var(--primary); color: #000; }
+        
+        table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin-top: 10px; }
+        td, th { border-bottom: 1px dotted #444; padding: 5px; text-align: left; }
+        
+        .admin-mode { --text: var(--alert); --primary: var(--alert); }
+
+    </style>
+</head>
+<body>
+
+    <div id="boot-screen" style="background:#000; z-index:2000; display:flex; align-items:center; justify-content:center; flex-direction:column;">
+        <div style="width:300px; font-size:0.9rem; color:#666;">
+            <div>> BIOS_CHECK... OK</div>
+            <div>> MOUNTING_VOLUMES... 17.5TB OK</div>
+            <div>> LOADING_KERNEL...</div>
+            <div id="loader" style="height:5px; background:#333; margin-top:10px; width:0%;"></div>
+        </div>
+    </div>
+
+    <div id="lock-screen">
+        <h1 style="font-size:3rem; letter-spacing:10px;">LOCKED</h1>
+        <input type="password" id="pin-input" class="pin-entry" placeholder="ENTER PIN" autofocus>
+        <div id="lock-msg" style="margin-top:15px; color:var(--alert); height:20px;"></div>
+    </div>
+
+    <div id="desktop">
+        <header>
+            <div id="user-status">USER: GUEST</div>
+            <div id="clock">00:00:00</div>
+        </header>
+        
+        <div id="app-grid">
+            </div>
+
+        <footer>
+            <span>SYSTEM: ONLINE</span>
+            <span style="margin-left:20px;">SECURE: TRUE</span>
+        </footer>
+
+        <div id="win-area"></div>
+    </div>
+
+    <script>
+        // ==========================================
+        // CONFIGURATION
+        // ==========================================
+        const SUPER_PIN = "1234567890102030405060708090";
+        
+        // ==========================================
+        // STATE MANAGEMENT
+        // ==========================================
+        let db = JSON.parse(localStorage.getItem('mq_os_db')) || { users: [] };
+        let currentUser = null;
+        let zIndex = 100;
+
+        // Save DB to LocalStorage
+        function saveSystem() {
+            localStorage.setItem('mq_os_db', JSON.stringify(db));
+        }
+
+        // ==========================================
+        // BOOT SEQUENCE
+        // ==========================================
+        window.onload = () => {
+            let load = 0;
+            const bar = document.getElementById('loader');
+            const interval = setInterval(() => {
+                load += 5;
+                bar.style.width = load + "%";
+                if(load >= 100) {
+                    clearInterval(interval);
+                    document.getElementById('boot-screen').style.display = 'none';
+                    document.getElementById('lock-screen').style.display = 'flex';
+                    document.getElementById('pin-input').focus();
+                }
+            }, 50);
+
+            setInterval(() => {
+                document.getElementById('clock').innerText = new Date().toLocaleTimeString();
+            }, 1000);
+        };
+
+        // ==========================================
+        // AUTHENTICATION
+        // ==========================================
+        const pinInput = document.getElementById('pin-input');
+        
+        pinInput.addEventListener('keydown', (e) => {
+            if(e.key === 'Enter') login(pinInput.value);
+        });
+
+        function login(pin) {
+            const msg = document.getElementById('lock-msg');
+            
+            // 1. Check SuperSU
+            if(pin === SUPER_PIN) {
+                currentUser = { name: "SUPERSU", type: "admin", id: "root" };
+                startSession();
+                return;
+            }
+
+            // 2. Check Database Users
+            const user = db.users.find(u => u.pin === pin);
+            if(user) {
+                currentUser = user;
+                startSession();
+            } else {
+                msg.innerText = "ACCESS DENIED";
+                pinInput.value = "";
+                setTimeout(() => msg.innerText = "", 2000);
+            }
+        }
+
+        function startSession() {
+            document.getElementById('lock-screen').style.display = 'none';
+            document.getElementById('desktop').style.display = 'grid';
+            
+            const badge = document.getElementById('user-status');
+            badge.innerText = `USER: ${currentUser.name}`;
+            
+            if(currentUser.type === 'admin') {
+                document.body.classList.add('admin-mode');
+                badge.innerText += " [GOD MODE]";
+            } else {
+                document.body.classList.remove('admin-mode');
+            }
+            
+            renderApps();
+        }
+
+        function logout() {
+            currentUser = null;
+            document.getElementById('desktop').style.display = 'none';
+            document.getElementById('win-area').innerHTML = "";
+            document.getElementById('lock-screen').style.display = 'flex';
+            pinInput.value = "";
+            pinInput.focus();
+        }
+
+        // ==========================================
+        // WINDOW MANAGER
+        // ==========================================
+        function spawnWindow(title, width, height, contentFn) {
+            const win = document.createElement('div');
+            win.className = 'window';
+            win.style.width = width + 'px';
+            win.style.height = height + 'px';
+            win.style.left = (50 + Math.random()*50) + 'px';
+            win.style.top = (50 + Math.random()*50) + 'px';
+            win.style.zIndex = ++zIndex;
+
+            // Header
+            const bar = document.createElement('div');
+            bar.className = 'win-bar';
+            bar.innerHTML = `<span>${title}</span><span class="close-btn">[X]</span>`;
+            
+            // Close Action
+            bar.querySelector('.close-btn').onclick = () => win.remove();
+
+            // Drag Action
+            bar.onmousedown = (e) => {
+                win.style.zIndex = ++zIndex;
+                let shiftX = e.clientX - win.getBoundingClientRect().left;
+                let shiftY = e.clientY - win.getBoundingClientRect().top;
+
+                function moveAt(pageX, pageY) {
+                    win.style.left = pageX - shiftX + 'px';
+                    win.style.top = pageY - shiftY + 'px';
+                }
+
+                function onMouseMove(event) {
+                    moveAt(event.pageX, event.pageY);
+                }
+
+                document.addEventListener('mousemove', onMouseMove);
+
+                bar.onmouseup = function() {
+                    document.removeEventListener('mousemove', onMouseMove);
+                    bar.onmouseup = null;
+                };
+            };
+            
+            // Content
+            const body = document.createElement('div');
+            body.className = 'win-body';
+            contentFn(body);
+
+            win.appendChild(bar);
+            win.appendChild(body);
+            document.getElementById('win-area').appendChild(win);
+        }
+
+        // ==========================================
+        // APPS & FEATURES
+        // ==========================================
+        const APPS = [
+            {
+                name: "NOTEPAD", icon: "[=]", 
+                action: () => spawnWindow("SECRET NOTES", 400, 300, (div) => {
+                    if(currentUser.type === 'admin') return div.innerHTML = "ADMINS DO NOT KEEP NOTES.";
+                    
+                    const area = document.createElement('textarea');
+                    area.style.height = "100%";
+                    area.value = currentUser.data.notepad || "";
+                    area.placeholder = "Type here to auto-save...";
+                    
+                    area.oninput = () => {
+                        currentUser.data.notepad = area.value;
+                        updateUserDB();
+                    };
+                    div.appendChild(area);
+                })
+            },
+            {
+                name: "VAULT", icon: "(@)", 
+                action: () => spawnWindow("LINK VAULT", 450, 350, (div) => {
+                    if(currentUser.type === 'admin') return div.innerHTML = "ADMINS MANAGE USERS, NOT LINKS.";
+                    
+                    div.innerHTML = `
+                        <div style="display:flex; gap:5px;">
+                            <input id="v-name" placeholder="Name">
+                            <input id="v-url" placeholder="URL">
+                            <button onclick="addLink(this)">ADD</button>
+                        </div>
+                        <div id="v-list" style="margin-top:10px;"></div>
+                    `;
+                    
+                    const renderLinks = () => {
+                        const list = div.querySelector('#v-list');
+                        list.innerHTML = "";
+                        (currentUser.data.links || []).forEach((l, idx) => {
+                            list.innerHTML += `<div style="padding:5px; border-bottom:1px dashed #333; display:flex; justify-content:space-between;">
+                                <a href="${l.url}" target="_blank" style="color:inherit;">${l.name}</a>
+                                <span style="cursor:pointer; color:red;" onclick="delLink(${idx}, this)">[DEL]</span>
+                            </div>`;
+                        });
+                    };
+
+                    window.addLink = (btn) => {
+                        const root = btn.parentElement;
+                        const name = root.querySelector('#v-name').value;
+                        const url = root.querySelector('#v-url').value;
+                        if(name && url) {
+                            currentUser.data.links.push({name, url});
+                            updateUserDB();
+                            renderLinks();
+                            root.querySelector('#v-name').value = "";
+                            root.querySelector('#v-url').value = "";
+                        }
+                    };
+                    
+                    window.delLink = (idx, span) => {
+                        currentUser.data.links.splice(idx, 1);
+                        updateUserDB();
+                        // Re-render handled by closure trick or simple refresh, doing simple refresh here:
+                        span.closest('.win-body').querySelector('#v-list').innerHTML = ""; // Clear and rebuild
+                        renderLinks(); 
+                    };
+
+                    renderLinks();
+                })
+            },
+            {
+                name: "DATA GRID", icon: "{$}",
+                action: () => spawnWindow("DATA GRID", 400, 300, (div) => {
+                     if(currentUser.type === 'admin') return div.innerHTML = "NO DATA ACCESS.";
+                     div.innerHTML = `<input id="d-key" placeholder="Key"><input id="d-val" placeholder="Value"><button onclick="addData(this)">SAVE</button><table id="d-table"></table>`;
+                     
+                     const render = () => {
+                         const tbl = div.querySelector('#d-table');
+                         tbl.innerHTML = "";
+                         (currentUser.data.grid || []).forEach(item => {
+                             tbl.innerHTML += `<tr><td>${item.k}</td><td>${item.v}</td></tr>`;
+                         });
+                     }
+                     
+                     window.addData = (btn) => {
+                         const p = btn.parentElement;
+                         const k = p.querySelector('#d-key').value;
+                         const v = p.querySelector('#d-val').value;
+                         if(k && v) {
+                             currentUser.data.grid.push({k, v});
+                             updateUserDB();
+                             render();
+                         }
+                     }
+                     render();
+                })
+            },
+            {
+                name: "ADMIN", icon: "[!]", 
+                adminOnly: true,
+                action: () => spawnWindow("USER MANAGEMENT", 500, 400, (div) => {
+                    div.innerHTML = `
+                        <div style="background:#220000; padding:10px; border:1px solid red; margin-bottom:10px;">
+                            <input id="new-u" placeholder="New Username">
+                            <input id="new-p" placeholder="New PIN">
+                            <button style="width:100%; border-color:red; color:red;" onclick="createUser(this)">CREATE USER</button>
+                        </div>
+                        <h3>EXISTING USERS</h3>
+                        <div id="u-list"></div>
+                    `;
+
+                    const renderUsers = () => {
+                        const list = div.querySelector('#u-list');
+                        list.innerHTML = "";
+                        db.users.forEach((u, idx) => {
+                            list.innerHTML += `<div style="padding:10px; border:1px solid #333; margin-bottom:5px; display:flex; justify-content:space-between;">
+                                <span>${u.name} (PIN: ${u.pin})</span>
+                                <button onclick="deleteUser(${idx}, this)">DELETE</button>
+                            </div>`;
+                        });
+                    };
+
+                    window.createUser = (btn) => {
+                        const p = btn.parentElement;
+                        const name = p.querySelector('#new-u').value;
+                        const pin = p.querySelector('#new-p').value;
+                        
+                        if(!name || !pin) return alert("Fill all fields");
+                        if(pin === SUPER_PIN) return alert("Cannot use GOD PIN");
+                        if(db.users.find(u => u.pin === pin)) return alert("PIN taken");
+
+                        db.users.push({
+                            id: Date.now(), name, pin, type: 'user',
+                            data: { notepad: "", links: [], grid: [] }
+                        });
+                        saveSystem();
+                        renderUsers();
+                        p.querySelector('#new-u').value = "";
+                        p.querySelector('#new-p').value = "";
+                    };
+
+                    window.deleteUser = (idx, btn) => {
+                        if(confirm("Delete User? Data will be lost.")) {
+                            db.users.splice(idx, 1);
+                            saveSystem();
+                            renderUsers();
+                        }
+                    };
+
+                    renderUsers();
+                })
+            },
+            {
+                name: "MODULES", icon: "###",
+                action: () => spawnWindow("SYSTEM MODULES (123+)", 300, 400, (div) => {
+                    div.innerHTML = "<div style='font-size:0.8rem; color:#555;'>SCROLLING ACTIVE PROCESSES...</div>";
+                    const logs = document.createElement('div');
+                    logs.style.fontFamily = "monospace";
+                    logs.style.fontSize = "0.8rem";
+                    div.appendChild(logs);
+                    
+                    for(let i=0; i<150; i++) {
+                        logs.innerHTML += `<div style="color:${Math.random()>.5?'#00ff41':'#008822'}">> PROC_ID_${Math.floor(Math.random()*9999)}_ACTIVE ... OK</div>`;
+                    }
+                })
+            },
+            { name: "LOGOUT", icon: "<-", action: logout }
+        ];
+
+        function renderApps() {
+            const grid = document.getElementById('app-grid');
+            grid.innerHTML = "";
+            APPS.forEach(app => {
+                if(app.adminOnly && currentUser.type !== 'admin') return;
+                
+                const icon = document.createElement('div');
+                icon.className = 'app-icon';
+                icon.innerHTML = `<div class="icon-art">${app.icon}</div><div>${app.name}</div>`;
+                icon.onclick = app.action;
+                grid.appendChild(icon);
+            });
+        }
+
+        function updateUserDB() {
+            if(currentUser.type === 'admin') return;
+            const idx = db.users.findIndex(u => u.id === currentUser.id);
+            if(idx !== -1) {
+                db.users[idx] = currentUser;
+                saveSystem();
+            }
+        }
+    </script>
+</body>
+</html>
